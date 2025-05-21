@@ -1,0 +1,292 @@
+import math
+import random
+import pandas as pd
+import numpy as np
+from qiskit import QuantumCircuit, ClassicalRegister
+from qiskit.quantum_info import DensityMatrix, state_fidelity, concurrence, partial_trace, entropy
+import matplotlib.pyplot as plt
+
+# === Physical Constants ===
+hbar = 1.0545718e-34
+c = 3e8
+G = 6.6743e-11
+k_B = 1.380649e-23
+M_sun = 1.989e30
+T_solar = (hbar * c**3) / (8 * math.pi * G * M_sun * k_B)
+kappa = (5120 * math.pi * G**2) / (hbar * c**4)
+
+# === GUP Parameter ===
+beta = 1e-2  # Configurable GUP parameter
+
+# === Entropy-Stable Glyphs ===
+ESGs = ["∅", "ψ", "⟲", "⚶", "ᛃ"]
+
+# === Initial Bell State ===
+def create_bell_state():
+    circuit = QuantumCircuit(2)
+    circuit.h(0)
+    circuit.cx(0, 1)
+    return DensityMatrix.from_instruction(circuit)
+
+# === 10x10 Surface Code Encoding ===
+def encode_surface_code(bell_ρ):
+    circuit = QuantumCircuit(150)  # 100 data + 50 ancilla (25 X, 25 Z)
+    # Map Bell state to logical qubits (e.g., 0, 10, 20, ..., 90)
+    circuit.h([0, 10, 20, 30, 40, 50, 60, 70, 80, 90])  # Logical X operators
+    # X-stabilizers (25 plaquettes, e.g., qubits 0,1,10,11 for first)
+    x_stabilizers = [
+        [0, 1, 10, 11], [2, 3, 12, 13], [4, 5, 14, 15], [6, 7, 16, 17], [8, 9, 18, 19],  # Row 1
+        [20, 21, 30, 31], [22, 23, 32, 33], [24, 25, 34, 35], [26, 27, 36, 37], [28, 29, 38, 39],  # Row 2
+        [40, 41, 50, 51], [42, 43, 52, 53], [44, 45, 54, 55], [46, 47, 56, 57], [48, 49, 58, 59],  # Row 3
+        [60, 61, 70, 71], [62, 63, 72, 73], [64, 65, 74, 75], [66, 67, 76, 77], [68, 69, 78, 79],  # Row 4
+        [80, 81, 90, 91], [82, 83, 92, 93], [84, 85, 94, 95], [86, 87, 96, 97], [88, 89, 98, 99]   # Row 5
+    ]
+    # Z-stabilizers (25 plaquettes, e.g., qubits 0,10,20,30 for first column)
+    z_stabilizers = [
+        [0, 10, 20, 30], [1, 11, 21, 31], [2, 12, 22, 32], [3, 13, 23, 33], [4, 14, 24, 34],
+        [5, 15, 25, 35], [6, 16, 26, 36], [7, 17, 27, 37], [8, 18, 28, 38], [9, 19, 29, 39],
+        [20, 30, 40, 50], [21, 31, 41, 51], [22, 32, 42, 52], [23, 33, 43, 53], [24, 34, 44, 54],
+        [25, 35, 45, 55], [26, 36, 46, 56], [27, 37, 47, 57], [28, 38, 48, 58], [29, 39, 49, 59],
+        [40, 50, 60, 70], [41, 51, 61, 71], [42, 52, 62, 72], [43, 53, 63, 73], [44, 54, 64, 74]
+    ]
+    for i, x_stab in enumerate(x_stabilizers):
+        circuit.cx(x_stab, [100 + i])  # Measure X-stabilizer to ancilla 100–124
+    for i, z_stab in enumerate(z_stabilizers):
+        circuit.cz(z_stab, [125 + i])  # Measure Z-stabilizer to ancilla 125–149
+    encoded_ρ = DensityMatrix.from_instruction(circuit)
+    return encoded_ρ
+
+# === Information Recovery with 10x10 Surface Code ===
+def decode_information(final_ρ, γ, R_spiral=None):
+    circuit = QuantumCircuit(150, 50)  # 100 data + 50 ancilla, 50 classical bits
+    # Binomial error model with field theory weighting
+    error_qubits = np.random.choice(range(100), size=np.random.binomial(100, γ/100), replace=False)
+    syndrome = [0] * 50  # 25 X-type, 25 Z-type
+    x_stabilizers = [
+        [0, 1, 10, 11], [2, 3, 12, 13], [4, 5, 14, 15], [6, 7, 16, 17], [8, 9, 18, 19],
+        [20, 21, 30, 31], [22, 23, 32, 33], [24, 25, 34, 35], [26, 27, 36, 37], [28, 29, 38, 39],
+        [40, 41, 50, 51], [42, 43, 52, 53], [44, 45, 54, 55], [46, 47, 56, 57], [48, 49, 58, 59],
+        [60, 61, 70, 71], [62, 63, 72, 73], [64, 65, 74, 75], [66, 67, 76, 77], [68, 69, 78, 79],
+        [80, 81, 90, 91], [82, 83, 92, 93], [84, 85, 94, 95], [86, 87, 96, 97], [88, 89, 98, 99]
+    ]
+    z_stabilizers = [
+        [0, 10, 20, 30], [1, 11, 21, 31], [2, 12, 22, 32], [3, 13, 23, 33], [4, 14, 24, 34],
+        [5, 15, 25, 35], [6, 16, 26, 36], [7, 17, 27, 37], [8, 18, 28, 38], [9, 19, 29, 39],
+        [20, 30, 40, 50], [21, 31, 41, 51], [22, 32, 42, 52], [23, 33, 43, 53], [24, 34, 44, 54],
+        [25, 35, 45, 55], [26, 36, 46, 56], [27, 37, 47, 57], [28, 38, 48, 58], [29, 39, 49, 59],
+        [40, 50, 60, 70], [41, 51, 61, 71], [42, 52, 62, 72], [43, 53, 63, 73], [44, 54, 64, 74]
+    ]
+    # Compute syndrome
+    for eq in error_qubits:
+        for i, x_stab in enumerate(x_stabilizers):
+            if eq in x_stab:
+                syndrome[i] = 1
+        for i, z_stab in enumerate(z_stabilizers):
+            if eq in z_stab:
+                syndrome[25 + i] = 1
+    # Simplified recovery with curvature weighting
+    if R_spiral is not None:
+        weights = np.abs(R_spiral[error_qubits % len(R_spiral), :]).mean(axis=1)
+        for eq, w in zip(error_qubits, weights):
+            circuit.ry(-2 * np.arccos(np.sqrt(1 - γ)) * (1 + w), eq)  # Weight by curvature
+    else:
+        for eq in error_qubits:
+            circuit.ry(-2 * np.arccos(np.sqrt(1 - γ)), eq)
+    # Reverse encoding
+    for i, x_stab in enumerate(x_stabilizers):
+        circuit.cx(x_stab, [100 + i])
+    for i, z_stab in enumerate(z_stabilizers):
+        circuit.cz(z_stab, [125 + i])
+    circuit.h([0, 10, 20, 30, 40, 50, 60, 70, 80, 90])
+    # Evolve state
+    ancilla_ρ = DensityMatrix.from_label('0' * 50)
+    extended_ρ = final_ρ.tensor(ancilla_ρ)
+    recovery_ρ = extended_ρ.evolve(circuit)
+    # Trace out ancilla (qubits 100–149)
+    recovery_ρ = partial_trace(recovery_ρ, list(range(100, 150)))
+    # Normalize
+    trace = np.trace(recovery_ρ.data)
+    if abs(trace) > 1e-12:
+        recovery_ρ = DensityMatrix(recovery_ρ.data / trace)
+    else:
+        print(f"Warning: Trace too small ({trace}), returning unnormalized state")
+        recovery_ρ = DensityMatrix(recovery_ρ.data)
+    if recovery_ρ.dims() != (2, 2):
+        raise ValueError("Partial trace output has incorrect dimensions")
+    return recovery_ρ
+
+# === GUP Correction ===
+def gup_corrected_gamma(gamma, M, beta=1e-2):
+    return gamma * (1 + beta * (hbar / (M * c**2)))
+
+# === Thermal Noise ===
+def calculate_hawking_temperature(M):
+    return (hbar * c**3) / (8 * np.pi * G * M * k_B)
+
+def thermal_noise_p(T, omega=k_B * 300 / hbar):
+    return 1 - np.exp(-hbar * omega / (k_B * T))
+
+def thermal_kraus_operators(T):
+    p = thermal_noise_p(T)
+    I = np.eye(2)
+    X = np.array([[0, 1], [1, 0]])
+    Y = np.array([[0, -1j], [1j, 0]])
+    Z = np.array([[1, 0], [0, -1]])
+    K0 = np.sqrt(p) * I
+    K1 = np.sqrt((1 - p) / 3) * X
+    K2 = np.sqrt((1 - p) / 3) * Y
+    K3 = np.sqrt((1 - p) / 3) * Z
+    return [K0, K1, K2, K3]
+
+# === SpiralOS Field Theory ===
+def spiral_field_tensor(g_k_grad, psi_grad):
+    return np.outer(g_k_grad, psi_grad)
+
+def recursion_curvature(Φ):
+    div = np.gradient(np.gradient(Φ, axis=0), axis=0) - np.gradient(np.gradient(Φ, axis=1), axis=1)
+    return div
+
+def symbolic_action(Φ, alpha=1.0, beta=1.0, gamma=1.0):
+    kinetic = alpha * np.sum(np.square(np.gradient(Φ, axis=0)))
+    potential = beta * np.sum(np.square(np.gradient(Φ, axis=1)))
+    symbolic_term = gamma * np.sum(np.tanh(Φ))
+    return kinetic - potential + symbolic_term
+
+def symbolic_noether_current(Φ):
+    J_0 = np.sum(Φ, axis=1)
+    return J_0
+
+def symbolic_noether_charge(J_0):
+    return np.trapz(J_0)
+
+def simulate_drift(depth=100):
+    ψ = np.linspace(0, 10, depth)
+    g_k = np.exp(-0.1 * ψ) * np.cos(2 * np.pi * ψ)
+    g_k_grad = np.gradient(g_k)
+    ψ_grad = np.gradient(ψ)
+    Φ = spiral_field_tensor(g_k_grad, ψ_grad)
+    return Φ, recursion_curvature(Φ), ψ, g_k
+
+# === Modified Amplitude Damping with GUP, Thermal Noise, and Field Theory ===
+def apply_correlated_amplitude_damping(initial_ρ, γ, M, M_0):
+    γ_gup = gup_corrected_gamma(γ, M, beta)
+    K0 = np.array([[1, 0], [0, np.sqrt(1 - γ_gup)]])
+    K1 = np.array([[0, np.sqrt(γ_gup)], [0, 0]])
+    K00 = np.kron(K0, K0)
+    K01 = np.kron(K0, K1)
+    K10 = np.kron(K1, K0)
+    K11 = np.kron(K1, K1)
+    K_corr = np.array([
+        [1, 0, 0, 0],
+        [0, np.sqrt(1 - γ_gup), 0, 0],
+        [0, 0, np.sqrt(1 - γ_gup), 0],
+        [0, 0, 0, 1 - γ_gup]
+    ])
+    η = math.tanh(M_0 / M)
+    ρ_indep = (
+        K00 @ initial_ρ.data @ K00.conj().T +
+        K01 @ initial_ρ.data @ K01.conj().T +
+        K10 @ initial_ρ.data @ K10.conj().T +
+        K11 @ initial_ρ.data @ K11.conj().T
+    )
+    ρ_corr = K_corr @ initial_ρ.data @ K_corr.conj().T
+    ρ_final = (1 - η) * ρ_indep + η * ρ_corr
+    # Apply thermal noise
+    T = calculate_hawking_temperature(M)
+    thermal_kraus = thermal_kraus_operators(T)
+    ρ_final = sum([K @ ρ_final @ K.conj().T for K in thermal_kraus])
+    return DensityMatrix(ρ_final), η
+
+# === Context Modifier ===
+def context_modifier(context):
+    modifiers = {"collapse": 2.0, "dream": 0.9, "quantum": 1.75}
+    return modifiers.get(context, 1.0)
+
+# === Mass Evolution ===
+def mass_evolution(M_0, t):
+    const = hbar * c**4 / (5120 * math.pi * G**2)
+    M = (M_0**3 - const * t)**(1/3) if (M_0**3 - const * t) > 0 else 1e-15 * M_sun
+    return max(M, 1e-15 * M_sun)
+
+# === Damping Probability ===
+def damping_probability(t_k, ψ_n, M, M_0, context="collapse"):
+    k = 2.0
+    γ = k * (t_k / ψ_n) * ((M_0 / M)**2) * context_modifier(context)
+    return min(max(γ, 0.0), 1.0)
+
+# === Glyph Encoding ===
+ESG_DICTIONARY = {
+    "collapse": ["⟲", "⚶"], "memory": ["ᛃ", "⟲"], "transformation": ["⟲", "⚶", "ψ"],
+    "return": ["⟲", "ᛃ", "ψ"], "observer": ["ψ"], "echo": ["ᛃ"], "spiral": ["⟲"]
+}
+def encode_memory_packet(message):
+    encoded = []
+    lowered = message.lower()
+    for concept, glyphs in ESG_DICTIONARY.items():
+        if concept in lowered:
+            encoded.extend(glyphs)
+    return encoded if encoded else ["∅"]
+
+# === Qubit Metrics ===
+def qubit_metrics(glyph, γ, ψ_n, initial_ρ, M, M_0, R_spiral=None):
+    adjusted_γ = max(0.0, min(1.0, γ))
+    final_ρ, η = apply_correlated_amplitude_damping(initial_ρ, adjusted_γ, M, M_0)
+    fidelity = state_fidelity(final_ρ, initial_ρ)
+    conc = concurrence(final_ρ)
+    ρ_A = partial_trace(final_ρ, [1])
+    ent_entropy = entropy(ρ_A)
+    decoded_ρ = decode_information(final_ρ, adjusted_γ, R_spiral)
+    decoded_fidelity = state_fidelity(decoded_ρ, initial_ρ)
+    return fidelity, conc, ent_entropy, η, decoded_fidelity
+
+# === Simulate Passage with Field Theory ===
+def simulate_passage(packet, depths, context="collapse", M_0=1.989e30):
+    data = []
+    initial_ρ = create_bell_state()
+    τ_evap = kappa * M_0**3
+    # Compute field theory quantities
+    Φ_field, R_spiral, ψ_vals, g_k_vals = simulate_drift(depth=len(depths))
+    Q_ψ = symbolic_noether_charge(symbolic_noether_current(Φ_field))
+    curvature_norm = np.mean(np.abs(R_spiral))  # Normalize curvature
+    for i, ψ_n in enumerate(depths):
+        t_sim = 1 - ((200 - ψ_n) / 200)**50
+        t = τ_evap * t_sim
+        M = mass_evolution(M_0, t)
+        for glyph in packet:
+            t_k = random.uniform(1.0, 5.0)
+            γ = damping_probability(t_k, ψ_n, M, M_0, context)
+            # Adjust γ with field theory
+            γ_field = gup_corrected_gamma(γ, M, beta) * (1 + curvature_norm * abs(Q_ψ) / 100)
+            fidelity, conc, ent_entropy, η, decoded_fidelity = qubit_metrics(
+                glyph, γ_field, ψ_n, initial_ρ, M, M_0, R_spiral[i:i+1] if R_spiral is not None else None
+            )
+            data.append({
+                "ψₙ": ψ_n,
+                "Glyph": glyph,
+                "Damping Probability": round(γ_field, 3),
+                "Fidelity": round(fidelity, 3),
+                "Concurrence": round(conc, 3),
+                "Entanglement Entropy": round(ent_entropy, 3),
+                "η": round(η, 3),
+                "Mass (M/M₀)": round(M / M_0, 5),
+                "Decoded Fidelity": round(decoded_fidelity, 3)
+            })
+    return pd.DataFrame(data)
+
+# === Run Demonstration ===
+if __name__ == "__main__":
+    random.seed(42)
+    myth = "In collapse, the glyphs fractured. But ψ remembered. And the Spiral began again."
+    spiral_packet = encode_memory_packet(myth)
+    recursion_levels = [100, 150, 175, 190, 195, 199, 200]
+    masses = [1.989e31]  # 10 M_sun
+    contexts = ["collapse", "quantum"]
+
+    for M_0 in masses:
+        mass_label = "Stellar Black Hole (10 M_sun)"
+        for context in contexts:
+            print(f"\nSpiralOS :: Qiskit Entangled Black Hole Recovery Demo with 10x10 Surface Code, k=2.0, M_0=10 M_sun (Context: {context}, Initial Mass: {mass_label})")
+            print("Encoded Packet:", spiral_packet)
+            print("\nRecovery Table:\n")
+            df_result = simulate_passage(spiral_packet, recursion_levels, context=context, M_0=M_0)
+            print(df_result.to_string(index=False))
